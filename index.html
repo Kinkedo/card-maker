@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>カード合成（AI切り抜き）</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="title">
+      <h1>カード合成（AI切り抜き）</h1>
+      <p class="sub">フレーム画像 + 手描きキャラ写真 → 前処理 → AI背景除去 → 合成 → 保存</p>
+    </div>
+    <div class="badges">
+      <span class="badge">Vanilla JS</span>
+      <span class="badge">Canvas</span>
+      <span class="badge">Transformers.js</span>
+      <span class="badge">RMBG-1.4</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card">
+      <h2>1) 素材</h2>
+
+      <div class="row">
+        <label class="field">
+          <span class="label">カード枠（背景・フレーム・文字入りの完成画像）</span>
+          <input id="frameInput" type="file" accept="image/*" />
+        </label>
+        <button id="useDemoFrame" class="btn secondary" type="button">デモ枠を使う</button>
+      </div>
+
+      <div class="row">
+        <label class="field">
+          <span class="label">キャラ写真（カメラ撮影/ファイル）</span>
+          <input id="charInput" type="file" accept="image/*" capture="environment" />
+        </label>
+        <button id="openCamera" class="btn secondary" type="button">カメラ起動</button>
+      </div>
+
+      <details class="details">
+        <summary>カメラ（getUserMedia）</summary>
+        <div class="camera">
+          <video id="video" playsinline muted></video>
+          <div class="row">
+            <button id="startCam" class="btn" type="button">開始</button>
+            <button id="snap" class="btn" type="button" disabled>撮影</button>
+            <button id="stopCam" class="btn secondary" type="button" disabled>停止</button>
+          </div>
+          <p class="hint">※ iOS Safari は条件によってカメラ起動に制限があります。動かない場合は上の「キャラ写真」から撮影/選択してください。</p>
+        </div>
+      </details>
+
+      <div class="previews">
+        <figure>
+          <figcaption>キャラ原画像</figcaption>
+          <canvas id="srcCanvas" class="thumb" width="320" height="320"></canvas>
+        </figure>
+        <figure>
+          <figcaption>前処理結果</figcaption>
+          <canvas id="prepCanvas" class="thumb" width="320" height="320"></canvas>
+        </figure>
+        <figure>
+          <figcaption>切り抜き（透過PNG）</figcaption>
+          <canvas id="cutCanvas" class="thumb" width="320" height="320"></canvas>
+        </figure>
+      </div>
+
+      <div class="row">
+        <button id="runCutout" class="btn" type="button" disabled>AI切り抜き実行</button>
+        <button id="cancelRun" class="btn secondary" type="button" disabled>キャンセル</button>
+      </div>
+
+      <div class="row">
+        <label class="field">
+          <span class="label">AI実行デバイス</span>
+          <select id="deviceSelect">
+            <option value="auto" selected>auto（推奨）</option>
+            <option value="webgpu">webgpu（速い/対応端末のみ）</option>
+            <option value="wasm">wasm（互換重視）</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="label">推論サイズ（長辺）</span>
+          <select id="inferSize">
+            <option value="512">512（軽い）</option>
+            <option value="768" selected>768（推奨）</option>
+            <option value="1024">1024（重い/高精細）</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2) 前処理（影/薄さ対策）</h2>
+      <div class="controls">
+        <div class="control">
+          <label>明るさ <span id="bVal" class="val">0</span></label>
+          <input id="brightness" type="range" min="-50" max="50" value="0" />
+        </div>
+        <div class="control">
+          <label>コントラスト <span id="cVal" class="val">20</span></label>
+          <input id="contrast" type="range" min="-50" max="80" value="20" />
+        </div>
+        <div class="control">
+          <label>ガンマ <span id="gVal" class="val">1.10</span></label>
+          <input id="gamma" type="range" min="60" max="160" value="110" />
+        </div>
+        <div class="control">
+          <label>シャープ <span id="sVal" class="val">0.35</span></label>
+          <input id="sharpen" type="range" min="0" max="100" value="35" />
+        </div>
+
+        <div class="row">
+          <label class="chk">
+            <input id="bgNormalize" type="checkbox" checked />
+            影ムラ補正（ぼかし差分）
+          </label>
+          <label class="chk">
+            <input id="autoCrop" type="checkbox" checked />
+            自動トリミング（余白カット）
+          </label>
+        </div>
+
+        <div class="row">
+          <button id="applyPrep" class="btn secondary" type="button" disabled>前処理を反映</button>
+          <button id="resetPrep" class="btn secondary" type="button" disabled>前処理リセット</button>
+        </div>
+
+        <p class="hint">
+          コツ：手描きが薄い/影が強い時は「影ムラ補正ON」＋「コントラスト↑」＋「ガンマ↓」が効きやすいです。
+        </p>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <h2>3) 合成（ドラッグ/ピンチ/回転）</h2>
+      <div class="composeWrap">
+        <canvas id="composeCanvas" class="compose" width="900" height="1200"></canvas>
+        <div class="composeTools">
+          <div class="row">
+            <button id="fitToFrame" class="btn secondary" type="button" disabled>枠にフィット</button>
+            <button id="centerChar" class="btn secondary" type="button" disabled>中央へ</button>
+            <button id="flipH" class="btn secondary" type="button" disabled>左右反転</button>
+          </div>
+          <div class="row">
+            <button id="exportPng" class="btn" type="button" disabled>PNGを書き出し（保存）</button>
+            <button id="shareBtn" class="btn secondary" type="button" disabled>共有（対応端末）</button>
+          </div>
+          <p class="hint">
+            操作：1本指ドラッグ＝移動 / 2本指ピンチ＝拡大縮小 / 2本指回転＝回転
+          </p>
+        </div>
+      </div>
+      <a id="downloadLink" class="hidden" download="card.png">download</a>
+    </section>
+
+    <section class="card wide">
+      <h2>ログ</h2>
+      <pre id="log" class="log"></pre>
+    </section>
+  </main>
+
+  <!-- Transformers.js (UMD build) -->
+  <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js"></script>
+  <script type="module" src="./script.js"></script>
+</body>
+</html>
